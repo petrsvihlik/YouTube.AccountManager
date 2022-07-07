@@ -1,10 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
-using Google.Apis.Auth.OAuth2;
+﻿using Google.Apis.Auth.OAuth2;
 using Google.Apis.Services;
 using Google.Apis.Util.Store;
 using Google.Apis.YouTube.v3;
@@ -16,27 +10,29 @@ namespace YouTube.Playground
     {
         static IConfigurationRoot _config;
 
+        static Program()
+        {
+            _config = new ConfigurationBuilder()
+                .SetBasePath(AppDomain.CurrentDomain.BaseDirectory)
+                .AddUserSecrets<Program>()
+                .Build();
+        }
+
         public static async Task Main(string[] args)
         {
             Console.WriteLine("YouTube Account Migration Tool");
             Console.WriteLine("==============================");
 
-            _config = new ConfigurationBuilder()
-                .SetBasePath(AppDomain.CurrentDomain.BaseDirectory)
-                .AddUserSecrets<Program>()
-                .Build();
-
-
             try
             {
-
                 var action = CliHelper.GetEnumFromCLI<Action>();
+                Console.WriteLine("Log in with the source account to migrate the data from.");
                 var sourceService = await GetService(_config.GetSection("src_account_id").Value, new[] { YouTubeService.Scope.YoutubeReadonly });
                 YouTubeService? targetService = null;
                 if (action == Action.Migrate)
                 {
+                    Console.WriteLine("Log in with the target account to migrate your data to.");
                     targetService = await GetService(_config.GetSection("target_account_id").Value, new[] { YouTubeService.Scope.Youtube });
-
                 }
 
                 var data = CliHelper.GetEnumFromCLI<Data>();
@@ -48,12 +44,10 @@ namespace YouTube.Playground
                         break;
 
                     case Data.LikedVideos:
-
                         await LikedVideos(sourceService, targetService, VideosResource.ListRequest.MyRatingEnum.Like);
                         break;
 
                     case Data.DislikedVideos:
-
                         await LikedVideos(sourceService, targetService, VideosResource.ListRequest.MyRatingEnum.Dislike);
                         break;
                 }
@@ -161,7 +155,7 @@ namespace YouTube.Playground
         }
 
         private static async Task<YouTubeService> GetService(string userId, IEnumerable<string> scopes)
-        {            
+        {
             UserCredential credential;
 
 
