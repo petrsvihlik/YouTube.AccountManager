@@ -3,7 +3,7 @@ A console utility allowing migration of data (playlists, liked videos, watching 
 
 
 ## Prerequisitess
-- [.NET 6.0](https://dotnet.microsoft.com/en-us/download
+- [.NET 6.0](https://dotnet.microsoft.com/en-us/download)
 - YouTube Data API access
 
 ## Setup
