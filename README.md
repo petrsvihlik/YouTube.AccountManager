@@ -26,3 +26,5 @@ A console utility allowing migration of data (playlists, liked videos, watching 
   - Migrate - performs the actual migration
 - Log in with the source account
 - Log in with the target account (required only for the actual migration)
+- Choose the data you'd like to migrate
+- Watch the output in the console
