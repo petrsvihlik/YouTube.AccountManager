@@ -57,7 +57,8 @@ namespace YouTube.Playground
                         break;
 
                     case Data.LikedVideos:
-                        await LikedVideosAsync(sourceEndpoint, targetEndpoint, VideosResource.ListRequest.MyRatingEnum.Like);
+                        //await LikedVideosAsync(sourceEndpoint, targetEndpoint, VideosResource.ListRequest.MyRatingEnum.Like);
+                        await LikedVideosHighVolumeAsync(sourceEndpoint, targetEndpoint);
                         break;
 
                     case Data.DislikedVideos:
@@ -227,6 +228,48 @@ namespace YouTube.Playground
             } while (nextPlayListPage != null);
         }
 
+
+        private static async Task LikedVideosHighVolumeAsync(Endpoint source, Endpoint? target)
+        {
+            var videosRequest = source.Service.PlaylistItems.List("snippet");
+            videosRequest.PlaylistId = source.Channel.ContentDetails.RelatedPlaylists.Likes;            
+            videosRequest.MaxResults = 50;
+
+            string? nextVideoPage = null;
+            int v = 1;
+            do
+            {
+                videosRequest.PageToken = nextVideoPage;
+                var videosResponse = await videosRequest.ExecuteAsync();
+                Log.Verbose("Total videos {0}", videosResponse.PageInfo.TotalResults);
+                foreach (var video in videosResponse.Items)
+                {
+                    Log.Information($"{v}) {video.Snippet.Title} ({video.Snippet.ResourceId.VideoId})");
+                    v++;
+                    try
+                    {
+                        if (target != null)
+                        {
+                            await target.Service.Videos.Rate(video.Snippet.ResourceId.VideoId, VideosResource.RateRequest.RatingEnum.Like).ExecuteAsync();
+                            Log.Information($"Video {video.Snippet.Title} ({video.Snippet.ResourceId.VideoId}) - Successfully rated");
+                        }
+                        else
+                        {
+                            Log.Information($"Video {video.Snippet.Title} ({video.Snippet.ResourceId.VideoId}) - Rating skipped");
+                        }
+                    }
+                    catch (Google.GoogleApiException ex) when (ex.Error.ErrorResponseContent.Contains("videoRatingDisabled"))
+                    {
+                        Log.Information("Unable to rate video - videoRatingDisabled");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error(ex, "Rating a video failed.");
+                    }
+                }
+                nextVideoPage = videosResponse.NextPageToken;
+            } while (nextVideoPage != null);
+        }
 
         private static async Task LikedVideosAsync(Endpoint source, Endpoint? target, VideosResource.ListRequest.MyRatingEnum rating)
         {
