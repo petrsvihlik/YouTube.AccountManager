@@ -2,6 +2,7 @@
 using Google.Apis.Services;
 using Google.Apis.Util.Store;
 using Google.Apis.YouTube.v3;
+using Google.Apis.YouTube.v3.Data;
 using Microsoft.Extensions.Configuration;
 
 namespace YouTube.Playground
@@ -27,12 +28,12 @@ namespace YouTube.Playground
             {
                 var action = CliHelper.GetEnumFromCLI<Action>();
                 Console.WriteLine("Log in with the source account to migrate the data from.");
-                var sourceService = await GetService(_config.GetSection("src_account_id").Value, new[] { YouTubeService.Scope.YoutubeReadonly });
+                var sourceService = await GetServiceAsync(_config.GetSection("src_account_id").Value, new[] { YouTubeService.Scope.YoutubeReadonly });
                 YouTubeService? targetService = null;
                 if (action == Action.Migrate)
                 {
                     Console.WriteLine("Log in with the target account to migrate your data to.");
-                    targetService = await GetService(_config.GetSection("target_account_id").Value, new[] { YouTubeService.Scope.Youtube });
+                    targetService = await GetServiceAsync(_config.GetSection("target_account_id").Value, new[] { YouTubeService.Scope.Youtube });
                 }
 
                 var data = CliHelper.GetEnumFromCLI<Data>();
@@ -40,15 +41,20 @@ namespace YouTube.Playground
                 switch (data)
                 {
                     case Data.Playlists:
-                        await Playlists(sourceService, targetService);
+                    case Data.PlayListItems:
+                        await PlaylistsAsync(sourceService, targetService, data == Data.PlayListItems);
                         break;
 
                     case Data.LikedVideos:
-                        await LikedVideos(sourceService, targetService, VideosResource.ListRequest.MyRatingEnum.Like);
+                        await LikedVideosAsync(sourceService, targetService, VideosResource.ListRequest.MyRatingEnum.Like);
                         break;
 
                     case Data.DislikedVideos:
-                        await LikedVideos(sourceService, targetService, VideosResource.ListRequest.MyRatingEnum.Dislike);
+                        await LikedVideosAsync(sourceService, targetService, VideosResource.ListRequest.MyRatingEnum.Dislike);
+                        break;
+
+                    case Data.Subscriptions:
+                        await SubscriptionsAsync(sourceService, targetService);
                         break;
                 }
             }
@@ -64,34 +70,89 @@ namespace YouTube.Playground
             Console.ReadKey();
         }
 
-        private static async Task Playlists(YouTubeService source, YouTubeService? target)
+        private static async Task SubscriptionsAsync(YouTubeService source, YouTubeService? target)
         {
-            var channelsListRequest = source.Channels.List("contentDetails");
-            channelsListRequest.Mine = true;
+            string? nextSubscriptionPage = null;
+            int subscriptionNo = 1;
 
-            // Retrieve the contentDetails part of the channel resource for the authenticated user's channel.
-            var channelsListResponse = await channelsListRequest.ExecuteAsync();
-
-            foreach (var channel in channelsListResponse.Items)
+            var targetChannel = await GetChannelAsync(target);
+            do
             {
-                int playlistNo = 1;
-                string? nextPlayListPage = null;
-                do
+                var subscriptionsRequest = source.Subscriptions.List("id,contentDetails,snippet");
+                subscriptionsRequest.Mine = true;
+                subscriptionsRequest.MaxResults = 50;
+                subscriptionsRequest.PageToken = nextSubscriptionPage;
+
+                var subscriptions = await subscriptionsRequest.ExecuteAsync();
+
+                Console.WriteLine("Subscriptions:");
+
+                foreach (var subscription in subscriptions.Items)
                 {
-                    var playlistsRequest = source.Playlists.List("contentDetails,snippet");
-                    playlistsRequest.Mine = true;
-                    playlistsRequest.MaxResults = 15;
-                    playlistsRequest.PageToken = nextPlayListPage;
+                    Console.WriteLine($"\t{subscriptionNo}) {subscription.Snippet.Title} ({subscription.Id})");
+                    subscriptionNo++;
 
-                    var playlists = await playlistsRequest.ExecuteAsync();
-
-
-                    var likes = playlists.Items.Where(p => p.Snippet.Title.Contains("Like"));
-
-                    foreach (var playlist in playlists.Items)
+                    try
                     {
-                        Console.WriteLine($"{playlistNo}) Videos in list {playlist.Snippet.Title}");
-                        playlistNo++;
+                        if (target != null)
+                        {
+                            subscription.Snippet.ChannelId = targetChannel.Id;
+                            var insertResult = await target.Subscriptions.Insert(subscription, "id,contentDetails,snippet").ExecuteAsync();
+                            Console.WriteLine($"Successfully inserted - {insertResult.Id}");
+                        }
+                        else
+                        {
+                            Console.Write("\t<<Preview mode, import skipped.>>");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine(ex.Message);
+                    }
+                }
+
+                nextSubscriptionPage = subscriptions.NextPageToken;
+            } while (nextSubscriptionPage != null);
+        }
+
+        private static async Task<Channel> GetChannelAsync(YouTubeService service)
+        {
+            var channelsRequest = service.Channels.List("id,snippet,contentDetails");
+            channelsRequest.Mine = true;
+            channelsRequest.MaxResults = 1;
+            var channels = await channelsRequest.ExecuteAsync();
+            return channels.Items[0];
+        }
+
+        private static async Task PlaylistsAsync(YouTubeService source, YouTubeService? target, bool includeVideos)
+        {
+            var channel = await GetChannelAsync(source);
+            int playlistNo = 1;
+            string? nextPlayListPage = null;
+            Console.WriteLine("Playlists:");
+            do
+            {
+                var playlistsRequest = source.Playlists.List("contentDetails,snippet");
+                playlistsRequest.ChannelId = channel.Id;
+                playlistsRequest.MaxResults = 15;
+                playlistsRequest.PageToken = nextPlayListPage;
+
+                var playlists = await playlistsRequest.ExecuteAsync();
+
+
+                //var likes = playlists.Items.Where(p => p.Snippet.Title.Contains("Like"));
+                foreach (var playlist in playlists.Items)
+                {
+                    Console.Write($"\t{playlistNo}) {playlist.Snippet.Title}");
+
+                    playlistNo++;
+                    //target.Playlists.List("contentDetails,snippet");
+
+                    //var insertPlaylist = target.Playlists.Insert(playlist, );
+
+                    if (includeVideos)
+                    {
+                        Console.WriteLine($" videos:");
                         string? nextPlaylistItemPage = null;
                         do
                         {
@@ -110,14 +171,16 @@ namespace YouTube.Playground
                             nextPlaylistItemPage = playlistItemsListResponse.NextPageToken;
                         } while (nextPlaylistItemPage != null);
                     }
-                    nextPlayListPage = playlists.NextPageToken;
-                } while (nextPlayListPage != null);
+                    Console.WriteLine();
+                }
+                nextPlayListPage = playlists.NextPageToken;
+            } while (nextPlayListPage != null);
 
-            }
+
         }
 
 
-        private static async Task LikedVideos(YouTubeService source, YouTubeService? target, VideosResource.ListRequest.MyRatingEnum rating)
+        private static async Task LikedVideosAsync(YouTubeService source, YouTubeService? target, VideosResource.ListRequest.MyRatingEnum rating)
         {
             var videosRequest = source.Videos.List("contentDetails,snippet");
             videosRequest.MyRating = rating;
@@ -137,7 +200,7 @@ namespace YouTube.Playground
                     {
                         if (target != null)
                         {
-                            string? x = target.Videos.Rate(video.Id, (VideosResource.RateRequest.RatingEnum)rating).Execute();
+                            string? x = await target.Videos.Rate(video.Id, (VideosResource.RateRequest.RatingEnum)rating).ExecuteAsync();
                         }
                         else
                         {
@@ -154,17 +217,16 @@ namespace YouTube.Playground
 
         }
 
-        private static async Task<YouTubeService> GetService(string userId, IEnumerable<string> scopes)
+        private static async Task<YouTubeService> GetServiceAsync(string userId, IEnumerable<string> scopes)
         {
             UserCredential credential;
-
 
             using (var stream = new FileStream("client_secrets.json", FileMode.Open, FileAccess.Read))
             {
                 credential = await GoogleWebAuthorizationBroker.AuthorizeAsync(
                     (await GoogleClientSecrets.FromStreamAsync(stream)).Secrets,
                     scopes,
-                    userId,
+                    userId + (new Random(DateTime.Now.Millisecond)).Next(0, 100), // randomize to trigger login every time
                     CancellationToken.None,
                     new FileDataStore(typeof(Program).ToString())
                 );

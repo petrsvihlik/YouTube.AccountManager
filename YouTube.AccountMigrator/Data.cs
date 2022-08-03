@@ -7,9 +7,9 @@
             LikedVideos,
             DislikedVideos,
             Playlists,
+            PlayListItems,
+            Subscriptions,
             All
         }
-
-
     }
 }
