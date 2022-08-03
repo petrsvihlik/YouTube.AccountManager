@@ -4,6 +4,7 @@ using Google.Apis.Util.Store;
 using Google.Apis.YouTube.v3;
 using Google.Apis.YouTube.v3.Data;
 using Microsoft.Extensions.Configuration;
+using Serilog;
 
 namespace YouTube.Playground
 {
@@ -17,6 +18,11 @@ namespace YouTube.Playground
                 .SetBasePath(AppDomain.CurrentDomain.BaseDirectory)
                 .AddUserSecrets<Program>()
                 .Build();
+
+            Log.Logger = new LoggerConfiguration()
+                .WriteTo.Console()
+                .WriteTo.File("log.txt", rollingInterval: RollingInterval.Day)
+                .CreateLogger();
         }
 
         public static async Task Main(string[] args)
@@ -27,6 +33,7 @@ namespace YouTube.Playground
             try
             {
                 var action = CliHelper.GetEnumFromCLI<Action>();
+                Log.Debug("Action: {action}", action);
                 Console.WriteLine("Log in with the source account to migrate the data from.");
                 var sourceService = await GetServiceAsync(_config.GetSection("src_account_id").Value, new[] { YouTubeService.Scope.YoutubeReadonly });
                 var sourceChannel = await GetChannelAsync(sourceService);
@@ -66,7 +73,7 @@ namespace YouTube.Playground
             {
                 foreach (var e in ex.InnerExceptions)
                 {
-                    Console.WriteLine("Error: " + e.Message);
+                    Log.Fatal(e, "An unexpected error occurred.");
                 }
             }
 
@@ -88,11 +95,11 @@ namespace YouTube.Playground
 
                 var subscriptions = await subscriptionsRequest.ExecuteAsync();
 
-                Console.WriteLine("Subscriptions:");
+                Log.Information("Subscriptions:");
 
                 foreach (var subscription in subscriptions.Items)
                 {
-                    Console.WriteLine($"\t{subscriptionNo}) {subscription.Snippet.Title} ({subscription.Id})");
+                    Log.Information($"\t{subscriptionNo}) {subscription.Snippet.Title} ({subscription.Id})");
                     subscriptionNo++;
 
                     try
@@ -101,16 +108,16 @@ namespace YouTube.Playground
                         {
                             subscription.Snippet.ChannelId = target.Channel.Id;
                             var insertResult = await target.Service.Subscriptions.Insert(subscription, "id,contentDetails,snippet").ExecuteAsync();
-                            Console.WriteLine($"Successfully inserted - {insertResult.Id}");
+                            Log.Information($"Subscription {subscription.Snippet.Title} ({subscription.Id}) - Successfully inserted as {insertResult.Id}");
                         }
                         else
                         {
-                            Console.Write("\t<<Preview mode, import skipped.>>");
+                            Log.Information($"Subscription {subscription.Snippet.Title} ({subscription.Id}) - Import skipped");
                         }
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine(ex.Message);
+                        Log.Error(ex, "Creating a subscription failed.");
                     }
                 }
 
@@ -178,7 +185,7 @@ namespace YouTube.Playground
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine(ex.Message);
+                        Log.Error(ex, "Creating a playlist failed.");
                     }
 
                     if (includeVideos)
@@ -233,24 +240,30 @@ namespace YouTube.Playground
             {
                 videosRequest.PageToken = nextVideoPage;
                 var videosResponse = await videosRequest.ExecuteAsync();
+                Log.Verbose("Total videos {0}", videosResponse.PageInfo.TotalResults);
                 foreach (var video in videosResponse.Items)
                 {
-                    Console.WriteLine($"{v}) {video.Snippet.Title} ({video.Id})");
+                    Log.Information($"{v}) {video.Snippet.Title} ({video.Id})");
                     v++;
                     try
                     {
                         if (target != null)
                         {
-                            string? x = await target.Service.Videos.Rate(video.Id, (VideosResource.RateRequest.RatingEnum)rating).ExecuteAsync();
+                            await target.Service.Videos.Rate(video.Id, (VideosResource.RateRequest.RatingEnum)rating).ExecuteAsync();
+                            Log.Information($"Video {video.Snippet.Title} ({video.Id}) - Successfully rated");
                         }
                         else
                         {
-                            Console.Write("\t<<Preview mode, import skipped.>>");
+                            Log.Information($"Video {video.Snippet.Title} ({video.Id}) - Rating skipped");
                         }
+                    }
+                    catch (Google.GoogleApiException ex) when (ex.Error.ErrorResponseContent.Contains("videoRatingDisabled"))
+                    {
+                        Log.Information("Unable to rate video - videoRatingDisabled");
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine(ex.Message);
+                        Log.Error(ex, "Rating a video failed.");
                     }
                 }
                 nextVideoPage = videosResponse.NextPageToken;
