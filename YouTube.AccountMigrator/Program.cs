@@ -49,6 +49,8 @@ namespace YouTube.Playground
 
                 var data = CliHelper.GetEnumFromCLI<Data>();
 
+                //TODO: remaining data: watch later, liked videos (need to remove already liked first to get the other ones)
+
                 switch (data)
                 {
                     case Data.Playlists:
@@ -59,6 +61,10 @@ namespace YouTube.Playground
                     case Data.LikedVideos:
                         //await LikedVideosAsync(sourceEndpoint, targetEndpoint, VideosResource.ListRequest.MyRatingEnum.Like);
                         await LikedVideosHighVolumeAsync(sourceEndpoint, targetEndpoint);
+                        break;
+
+                    case Data.WatchLater:
+                        await WatchLaterAsync(sourceEndpoint, targetEndpoint);
                         break;
 
                     case Data.DislikedVideos:
@@ -251,6 +257,54 @@ namespace YouTube.Playground
                 }
                 nextPlayListPage = playlists.NextPageToken;
             } while (nextPlayListPage != null);
+        }
+
+
+        private static async Task WatchLaterAsync(Endpoint source, Endpoint? target)
+        {
+            var videosRequest = source.Service.PlaylistItems.List("id,snippet,contentDetails");
+            videosRequest.PlaylistId = source.Channel.ContentDetails.RelatedPlaylists.WatchLater;
+            videosRequest.MaxResults = 50;
+
+            string? nextVideoPage = null;
+            int v = 1;
+            do
+            {
+                videosRequest.PageToken = nextVideoPage;
+                var videosResponse = await videosRequest.ExecuteAsync();
+                Log.Verbose("Total videos {0}", videosResponse.PageInfo.TotalResults);
+                foreach (var video in videosResponse.Items)
+                {
+                    Log.Information($"{v}) {video.Snippet.Title} ({video.Snippet.ResourceId.VideoId})");
+                    v++;
+
+                    try
+                    {
+                        if (target != null)
+                        {
+                            video.Snippet.ChannelId = target.Channel.Id;
+                            video.Snippet.PlaylistId = "WL";
+                            video.Snippet.Position = null; // Otherwise "bad request" when a deleted video occurs in the playlist
+                            var insertResult = await target.Service.PlaylistItems.Insert(video, "id,contentDetails,snippet").ExecuteAsync();
+                            Log.Information($"Video {video.Snippet.Title} - Successfully inserted as {insertResult.Id}");
+                        }
+                        else
+                        {
+                            Log.Information($"Video {video.Snippet.Title} - Import skipped");
+                        }
+
+                    }
+                    catch (Google.GoogleApiException ex) when (ex.Error.ErrorResponseContent.Contains("videoRatingDisabled"))
+                    {
+                        Log.Information("Unable to rate video - videoRatingDisabled");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error(ex, "Inserting video into a playlist failed.");
+                    }
+                }
+                nextVideoPage = videosResponse.NextPageToken;
+            } while (nextVideoPage != null);
         }
 
 

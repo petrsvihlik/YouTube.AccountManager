@@ -9,7 +9,7 @@
             Playlists,
             PlayListItems,
             Subscriptions,
-            All
+            WatchLater
         }
     }
 }
