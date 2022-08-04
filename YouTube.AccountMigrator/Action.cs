@@ -5,7 +5,8 @@
         public enum Action
         {
             Preview,
-            Migrate
+            Migrate,
+            Delete
         }
     }
 }

@@ -34,14 +34,14 @@ namespace YouTube.Playground
             {
                 var action = CliHelper.GetEnumFromCLI<Action>();
                 Log.Debug("Action: {action}", action);
-                Console.WriteLine("Log in with the source account to migrate the data from.");
-                var sourceService = await GetServiceAsync(_config.GetSection("src_account_id").Value, new[] { YouTubeService.Scope.YoutubeReadonly });
+                Console.WriteLine($"Log in with the source account to {action} the data from.");
+                var sourceService = await GetServiceAsync(_config.GetSection("src_account_id").Value, new[] { action == Action.Delete ? YouTubeService.Scope.Youtube : YouTubeService.Scope.YoutubeReadonly });
                 var sourceChannel = await GetChannelAsync(sourceService);
                 Endpoint sourceEndpoint = new(sourceService, sourceChannel);
                 Endpoint? targetEndpoint = null;
                 if (action == Action.Migrate)
                 {
-                    Console.WriteLine("Log in with the target account to migrate your data to.");
+                    Console.WriteLine($"Log in with the target account to {action} your data to.");
                     var targetService = await GetServiceAsync(_config.GetSection("target_account_id").Value, new[] { YouTubeService.Scope.Youtube });
                     var targetChannel = await GetChannelAsync(targetService);
                     targetEndpoint = new(targetService, targetChannel);
@@ -53,7 +53,7 @@ namespace YouTube.Playground
                 {
                     case Data.Playlists:
                     case Data.PlayListItems:
-                        await PlaylistsAsync(sourceEndpoint, targetEndpoint, data == Data.PlayListItems);
+                        await PlaylistsAsync(sourceEndpoint, targetEndpoint, data == Data.PlayListItems, action);
                         break;
 
                     case Data.LikedVideos:
@@ -66,7 +66,7 @@ namespace YouTube.Playground
                         break;
 
                     case Data.Subscriptions:
-                        await SubscriptionsAsync(sourceEndpoint, targetEndpoint);
+                        await SubscriptionsAsync(sourceEndpoint, targetEndpoint, action);
                         break;
                 }
             }
@@ -82,7 +82,8 @@ namespace YouTube.Playground
             Console.ReadKey();
         }
 
-        private static async Task SubscriptionsAsync(Endpoint source, Endpoint? target)
+
+        private static async Task SubscriptionsAsync(Endpoint source, Endpoint? target, Action action)
         {
             string? nextSubscriptionPage = null;
             int subscriptionNo = 1;
@@ -105,20 +106,28 @@ namespace YouTube.Playground
 
                     try
                     {
-                        if (target != null)
+                        if (action == Action.Delete)
                         {
-                            subscription.Snippet.ChannelId = target.Channel.Id;
-                            var insertResult = await target.Service.Subscriptions.Insert(subscription, "id,contentDetails,snippet").ExecuteAsync();
-                            Log.Information($"Subscription {subscription.Snippet.Title} ({subscription.Id}) - Successfully inserted as {insertResult.Id}");
+                            await source.Service.Subscriptions.Delete(subscription.Id).ExecuteAsync();
+                            Log.Information($"Subscription {subscription.Snippet.Title} - Deleted");
                         }
                         else
                         {
-                            Log.Information($"Subscription {subscription.Snippet.Title} ({subscription.Id}) - Import skipped");
+                            if (target != null)
+                            {
+                                subscription.Snippet.ChannelId = target.Channel.Id;
+                                var insertResult = await target.Service.Subscriptions.Insert(subscription, "id,contentDetails,snippet").ExecuteAsync();
+                                Log.Information($"Subscription {subscription.Snippet.Title} ({subscription.Id}) - Successfully inserted as {insertResult.Id}");
+                            }
+                            else
+                            {
+                                Log.Information($"Subscription {subscription.Snippet.Title} ({subscription.Id}) - Import skipped");
+                            }
                         }
                     }
                     catch (Exception ex)
                     {
-                        Log.Error(ex, "Creating a subscription failed.");
+                        Log.Error(ex, $"{action} a subscription failed.");
                     }
                 }
 
@@ -150,79 +159,95 @@ namespace YouTube.Playground
             }
         }
 
-        private static async Task PlaylistsAsync(Endpoint source, Endpoint? target, bool includeVideos)
+        private static async Task PlaylistsAsync(Endpoint source, Endpoint? target, bool includeVideos, Action action)
         {
             int playlistNo = 1;
             string? nextPlayListPage = null;
-            Console.WriteLine("Playlists:");
+            Log.Information("Playlists:");
             do
             {
                 var playlistsRequest = source.Service.Playlists.List("contentDetails,snippet");
                 playlistsRequest.ChannelId = source.Channel.Id;
-                playlistsRequest.MaxResults = 15;
+                playlistsRequest.MaxResults = 50;
                 playlistsRequest.PageToken = nextPlayListPage;
 
                 var playlists = await playlistsRequest.ExecuteAsync();
 
                 foreach (var playlist in playlists.Items)
                 {
-                    Console.Write($"\t{playlistNo}) {playlist.Snippet.Title}");
+                    Log.Information($"\t{playlistNo}) {playlist.Snippet.Title}");
                     playlistNo++;
 
-                    string currentPlaylistId = null;
-                    try
+                    if (action == Action.Delete)
                     {
-                        if (target != null)
-                        {
-                            playlist.Snippet.ChannelId = target.Channel.Id;
-                            var insertResult = await target.Service.Playlists.Insert(playlist, "id,contentDetails,snippet").ExecuteAsync();
-                            currentPlaylistId = insertResult.Id;
-                            Console.WriteLine($"Successfully inserted - {currentPlaylistId}");
-                        }
-                        else
-                        {
-                            Console.Write("\t<<Preview mode, import skipped.>>");
-                        }
+                        await source.Service.Playlists.Delete(playlist.Id).ExecuteAsync();
+                        Log.Information($"Playlist {playlist.Snippet.Title} - Deleted");
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        Log.Error(ex, "Creating a playlist failed.");
-                    }
-
-                    if (includeVideos)
-                    {
-                        Console.WriteLine($" videos:");
-                        string? nextPlaylistItemPage = null;
-                        do
+                        string currentPlaylistId = null;
+                        try
                         {
-                            var playlistItemsListRequest = source.Service.PlaylistItems.List("snippet");
-                            playlistItemsListRequest.PlaylistId = playlist.Id;
-                            playlistItemsListRequest.MaxResults = 50;
-                            playlistItemsListRequest.PageToken = nextPlaylistItemPage;
-
-                            var playlistItemsListResponse = await playlistItemsListRequest.ExecuteAsync();
-
-                            foreach (var playlistItem in playlistItemsListResponse.Items)
+                            if (target != null)
                             {
-                                Console.WriteLine($"\t{playlistItem.Snippet.Title} ({playlistItem.Snippet.ResourceId.VideoId})");
-
-                                if (target != null)
-                                {
-                                    playlistItem.Snippet.ChannelId = target.Channel.Id;
-                                    playlistItem.Snippet.PlaylistId = currentPlaylistId;
-                                    var insertResult = await target.Service.PlaylistItems.Insert(playlistItem, "id,contentDetails,snippet").ExecuteAsync();
-                                    Console.WriteLine($"Successfully inserted - {insertResult.Id}");
-                                }
-                                else
-                                {
-                                    Console.Write("\t<<Preview mode, import skipped.>>");
-                                }
+                                playlist.Snippet.ChannelId = target.Channel.Id;
+                                var insertResult = await target.Service.Playlists.Insert(playlist, "id,contentDetails,snippet").ExecuteAsync();
+                                currentPlaylistId = insertResult.Id;
+                                Log.Information($"Playlist {playlist.Snippet.Title} - Successfully inserted as {currentPlaylistId}");
                             }
+                            else
+                            {
+                                Log.Information($"Playlist {playlist.Snippet.Title} - Import skipped");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Error(ex, $"{action} a playlist failed.");
+                        }
 
-                            nextPlaylistItemPage = playlistItemsListResponse.NextPageToken;
-                        } while (nextPlaylistItemPage != null);
+                        if (includeVideos)
+                        {
+                            Log.Information($"Videos:");
+                            string? nextPlaylistItemPage = null;
+                            do
+                            {
+                                var playlistItemsListRequest = source.Service.PlaylistItems.List("id,snippet,contentDetails");
+                                playlistItemsListRequest.PlaylistId = playlist.Id;
+                                playlistItemsListRequest.MaxResults = 50;
+                                playlistItemsListRequest.PageToken = nextPlaylistItemPage;
+
+                                var playlistItemsListResponse = await playlistItemsListRequest.ExecuteAsync();
+
+                                foreach (var playlistItem in playlistItemsListResponse.Items)
+                                {
+                                    Console.WriteLine($"\t{playlistItem.Snippet.Title} ({playlistItem.Snippet.ResourceId.VideoId})");
+
+                                    try
+                                    {
+                                        if (target != null)
+                                        {
+                                            playlistItem.Snippet.ChannelId = target.Channel.Id;
+                                            playlistItem.Snippet.PlaylistId = currentPlaylistId;
+                                            playlistItem.Snippet.Position = null; // Otherwise "bad request" when a deleted video occurs in the playlist
+                                            var insertResult = await target.Service.PlaylistItems.Insert(playlistItem, "id,contentDetails,snippet").ExecuteAsync();
+                                            Log.Information($"Video {playlistItem.Snippet.Title} - Successfully inserted as {insertResult.Id}");
+                                        }
+                                        else
+                                        {
+                                            Log.Information($"Video {playlistItem.Snippet.Title} - Import skipped");
+                                        }
+
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Log.Error(ex, "Inserting video into a playlist failed.");
+                                    }
+                                }
+
+                                nextPlaylistItemPage = playlistItemsListResponse.NextPageToken;
+                            } while (nextPlaylistItemPage != null);
+                        }
                     }
-                    Console.WriteLine();
                 }
                 nextPlayListPage = playlists.NextPageToken;
             } while (nextPlayListPage != null);
@@ -232,7 +257,7 @@ namespace YouTube.Playground
         private static async Task LikedVideosHighVolumeAsync(Endpoint source, Endpoint? target)
         {
             var videosRequest = source.Service.PlaylistItems.List("snippet");
-            videosRequest.PlaylistId = source.Channel.ContentDetails.RelatedPlaylists.Likes;            
+            videosRequest.PlaylistId = source.Channel.ContentDetails.RelatedPlaylists.Likes;
             videosRequest.MaxResults = 50;
 
             string? nextVideoPage = null;
