@@ -1,4 +1,5 @@
-﻿using Google.Apis.Auth.OAuth2;
+﻿using Google;
+using Google.Apis.Auth.OAuth2;
 using Google.Apis.Services;
 using Google.Apis.Util.Store;
 using Google.Apis.YouTube.v3;
@@ -33,9 +34,11 @@ namespace YouTube.Playground
             try
             {
                 var action = CliHelper.GetEnumFromCLI<Action>();
+                var data = CliHelper.GetEnumFromCLI<Data>();
+
                 Log.Debug("Action: {action}", action);
                 Console.WriteLine($"Log in with the source account to {action} the data from.");
-                var sourceService = await GetServiceAsync(_config.GetSection("src_account_id").Value, new[] { action == Action.Delete ? YouTubeService.Scope.Youtube : YouTubeService.Scope.YoutubeReadonly });
+                var sourceService = await GetServiceAsync(_config.GetSection("src_account_id").Value, new[] { action == Action.Delete ? YouTubeService.Scope.Youtube : YouTubeService.Scope.Youtube });
                 var sourceChannel = await GetChannelAsync(sourceService);
                 Endpoint sourceEndpoint = new(sourceService, sourceChannel);
                 Endpoint? targetEndpoint = null;
@@ -47,9 +50,7 @@ namespace YouTube.Playground
                     targetEndpoint = new(targetService, targetChannel);
                 }
 
-                var data = CliHelper.GetEnumFromCLI<Data>();
 
-                //TODO: remaining data: watch later, liked videos (need to remove already liked first to get the other ones)
 
                 switch (data)
                 {
@@ -60,7 +61,7 @@ namespace YouTube.Playground
 
                     case Data.LikedVideos:
                         //await LikedVideosAsync(sourceEndpoint, targetEndpoint, VideosResource.ListRequest.MyRatingEnum.Like);
-                        await LikedVideosHighVolumeAsync(sourceEndpoint, targetEndpoint);
+                        await LikedVideosHighVolumeAsync(sourceEndpoint, targetEndpoint, action);
                         break;
 
                     case Data.WatchLater:
@@ -74,6 +75,8 @@ namespace YouTube.Playground
                     case Data.Subscriptions:
                         await SubscriptionsAsync(sourceEndpoint, targetEndpoint, action);
                         break;
+
+
                 }
             }
             catch (AggregateException ex)
@@ -294,7 +297,7 @@ namespace YouTube.Playground
                         }
 
                     }
-                    catch (Google.GoogleApiException ex) when (ex.Error.ErrorResponseContent.Contains("videoRatingDisabled"))
+                    catch (GoogleApiException ex) when (ex.Error.ErrorResponseContent.Contains("videoRatingDisabled"))
                     {
                         Log.Information("Unable to rate video - videoRatingDisabled");
                     }
@@ -308,7 +311,7 @@ namespace YouTube.Playground
         }
 
 
-        private static async Task LikedVideosHighVolumeAsync(Endpoint source, Endpoint? target)
+        private static async Task LikedVideosHighVolumeAsync(Endpoint source, Endpoint? target, Action action)
         {
             var videosRequest = source.Service.PlaylistItems.List("snippet");
             videosRequest.PlaylistId = source.Channel.ContentDetails.RelatedPlaylists.Likes;
@@ -321,34 +324,105 @@ namespace YouTube.Playground
                 videosRequest.PageToken = nextVideoPage;
                 var videosResponse = await videosRequest.ExecuteAsync();
                 Log.Verbose("Total videos {0}", videosResponse.PageInfo.TotalResults);
-                foreach (var video in videosResponse.Items)
+
+                var options = new ParallelOptions { MaxDegreeOfParallelism = 1 };
+                await Parallel.ForEachAsync(videosResponse.Items, options, async (video, token) =>
                 {
                     Log.Information($"{v}) {video.Snippet.Title} ({video.Snippet.ResourceId.VideoId})");
                     v++;
+                    if (video.Snippet.Title == "Private video")
+                    {
+                        Log.Information("Unable to rate video - Private video");
+                        await source.Service.PlaylistItems.Delete(video.Id).ExecuteAsync();
+                        Log.Information("Unable to rate video - Video removed from playlist");
+                        return;
+                    }
+                    else if (video.Snippet.Title == "Deleted video")
+                    {
+                        Log.Information("Unable to rate video - Deleted video");
+                        await source.Service.PlaylistItems.Delete(video.Id).ExecuteAsync();
+                        Log.Information("Unable to rate video - Video removed from playlist");
+                        return;
+                    }
                     try
                     {
-                        if (target != null)
+                        if (action == Action.Delete)
                         {
-                            await target.Service.Videos.Rate(video.Snippet.ResourceId.VideoId, VideosResource.RateRequest.RatingEnum.Like).ExecuteAsync();
-                            Log.Information($"Video {video.Snippet.Title} ({video.Snippet.ResourceId.VideoId}) - Successfully rated");
+                            await source.Service.Videos.Rate(video.Snippet.ResourceId.VideoId, VideosResource.RateRequest.RatingEnum.None).ExecuteAsync();
+                            Log.Information($"Video {video.Snippet.Title} ({video.Snippet.ResourceId.VideoId}) - Successfully unrated");
                         }
                         else
                         {
-                            Log.Information($"Video {video.Snippet.Title} ({video.Snippet.ResourceId.VideoId}) - Rating skipped");
+                            if (target != null)
+                            {
+                                await target.Service.Videos.Rate(video.Snippet.ResourceId.VideoId, VideosResource.RateRequest.RatingEnum.Like).ExecuteAsync();
+                                Log.Information($"Video {video.Snippet.Title} ({video.Snippet.ResourceId.VideoId}) - Successfully rated");
+                                Thread.Sleep(200);
+                                //await source.Service.Videos.Rate(video.Snippet.ResourceId.VideoId, VideosResource.RateRequest.RatingEnum.None).ExecuteAsync();
+                                //Log.Information($"Video {video.Snippet.Title} ({video.Snippet.ResourceId.VideoId}) - Successfully unrated");
+                                await source.Service.PlaylistItems.Delete(video.Id).ExecuteAsync();
+                                Log.Information("Migration completed - Video removed from the source playlist");
+                            }
+                            else
+                            {
+                                Log.Information($"Video {video.Snippet.Title} ({video.Snippet.ResourceId.VideoId}) - Rating skipped");
+                            }
                         }
                     }
-                    catch (Google.GoogleApiException ex) when (ex.Error.ErrorResponseContent.Contains("videoRatingDisabled"))
+                    catch (GoogleApiException ex) when (ex.Error.ErrorResponseContent.Contains("videoRatingDisabled"))
                     {
                         Log.Information("Unable to rate video - videoRatingDisabled");
+                        await source.Service.PlaylistItems.Delete(video.Id).ExecuteAsync();
+                        Log.Information("Unable to rate video - Video removed from playlist");
                     }
                     catch (Exception ex)
                     {
                         Log.Error(ex, "Rating a video failed.");
                     }
-                }
+
+                });
+
+                //foreach (var video in videosResponse.Items)
+                //{
+                //    Log.Information($"{v}) {video.Snippet.Title} ({video.Snippet.ResourceId.VideoId})");
+                //    v++;
+                //    try
+                //    {
+                //        if (action == Action.Delete)
+                //        {
+                //            await source.Service.Videos.Rate(video.Snippet.ResourceId.VideoId, VideosResource.RateRequest.RatingEnum.None).ExecuteAsync();
+                //            Log.Information($"Video {video.Snippet.Title} ({video.Snippet.ResourceId.VideoId}) - Successfully unrated");
+
+                //        }
+                //        else
+                //        {
+                //            if (target != null)
+                //            {
+                //                await target.Service.Videos.Rate(video.Snippet.ResourceId.VideoId, VideosResource.RateRequest.RatingEnum.Like).ExecuteAsync();
+                //                Log.Information($"Video {video.Snippet.Title} ({video.Snippet.ResourceId.VideoId}) - Successfully rated");
+
+                //                await source.Service.Videos.Rate(video.Snippet.ResourceId.VideoId, VideosResource.RateRequest.RatingEnum.None).ExecuteAsync();
+                //                Log.Information($"Video {video.Snippet.Title} ({video.Snippet.ResourceId.VideoId}) - Successfully unrated");
+                //            }
+                //            else
+                //            {
+                //                Log.Information($"Video {video.Snippet.Title} ({video.Snippet.ResourceId.VideoId}) - Rating skipped");
+                //            }
+                //        }
+                //    }
+                //    catch (GoogleApiException ex) when (ex.Error.ErrorResponseContent.Contains("videoRatingDisabled"))
+                //    {
+                //        Log.Information("Unable to rate video - videoRatingDisabled");
+                //    }
+                //    catch (Exception ex)
+                //    {
+                //        Log.Error(ex, "Rating a video failed.");
+                //    }
+                //}
                 nextVideoPage = videosResponse.NextPageToken;
             } while (nextVideoPage != null);
         }
+
 
         private static async Task LikedVideosAsync(Endpoint source, Endpoint? target, VideosResource.ListRequest.MyRatingEnum rating)
         {
@@ -379,7 +453,7 @@ namespace YouTube.Playground
                             Log.Information($"Video {video.Snippet.Title} ({video.Id}) - Rating skipped");
                         }
                     }
-                    catch (Google.GoogleApiException ex) when (ex.Error.ErrorResponseContent.Contains("videoRatingDisabled"))
+                    catch (GoogleApiException ex) when (ex.Error.ErrorResponseContent.Contains("videoRatingDisabled"))
                     {
                         Log.Information("Unable to rate video - videoRatingDisabled");
                     }
